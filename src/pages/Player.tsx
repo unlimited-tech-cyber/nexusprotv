@@ -14,20 +14,40 @@ interface Channel {
   is_free: boolean;
 }
 
+const CDN_HOST = 'https://cdnedgch2.azamtvltd.co.tz';
+
 // Key stored in localStorage when paywall was triggered
 const PAYWALL_KEY = 'chtv_paywall_at';
 const BLOCK_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
-/** Returns true if the 24-hour block is still active */
 function isBlockActive(): boolean {
   const stored = localStorage.getItem(PAYWALL_KEY);
   if (!stored) return false;
   return Date.now() - parseInt(stored) < BLOCK_DURATION;
 }
 
-/** Records the moment the paywall was triggered */
 function recordPaywallHit() {
   localStorage.setItem(PAYWALL_KEY, Date.now().toString());
+}
+
+/** Check if a channel URL belongs to AzamTV CDN (needs token refresh) */
+function isAzamCdnUrl(url: string): boolean {
+  return url.includes('cdnedgch2.azamtvltd.co.tz');
+}
+
+/** Extract the channel slug from an AzamTV CDN URL
+ *  e.g. .../live/eds/AzamSport1/DASH/AzamSport1.mpd → AzamSport1
+ */
+function extractChannelSlug(url: string): string | null {
+  const match = url.match(/\/live\/eds\/([^/]+)\/DASH\//);
+  return match ? match[1] : null;
+}
+
+/** Fetch fresh CDN token from our server-side proxy */
+async function fetchCdnToken(): Promise<{ token: string; exp: number; cdnHost: string }> {
+  const res = await fetch('/api/cdn-token?t=' + Date.now(), { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Token fetch failed: ${res.status}`);
+  return res.json();
 }
 
 export default function Player() {
@@ -36,37 +56,46 @@ export default function Player() {
   const { user, profile } = useAuth();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [channel, setChannel] = useState<Channel | null>(null);
-  const [token, setToken] = useState('');
   const [muted, setMuted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [trialLeft, setTrialLeft] = useState(30);
   const [trialDone, setTrialDone] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
+
+  // Token stored in ref — no re-renders on refresh
+  const latestTokenRef = useRef<string>('');
+  const tokenIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelledRef = useRef(false);
+
   const shakaRef = useRef<any>(null);
   const hlsRef = useRef<any>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isPremium = profile?.plan && profile.plan !== 'free';
-  // blocked = paywall was seen in last 24 hours
   const blocked = !isPremium && !channel?.is_free && isBlockActive();
 
+  // ─── MOUNT: load scripts + fetch channel ─────────────────────────────
   useEffect(() => {
-    loadScripts().then(fetchChannelAndToken);
-    return cleanup;
+    cancelledRef.current = false;
+    loadScripts().then(fetchChannel);
+    return () => {
+      cancelledRef.current = true;
+      cleanup();
+    };
   }, [id]);
 
+  // ─── PLAYBACK trigger ────────────────────────────────────────────────
   useEffect(() => {
     if (!channel || !videoRef.current) return;
     if (blocked) {
-      // Still within 24h block — show paywall immediately, no trial
       setShowPaywall(true);
       setLoading(false);
     } else {
       startPlayback();
     }
-  }, [channel, token]);
+  }, [channel]);
 
-  // 30-second trial timer for non-premium, non-blocked, non-free users
+  // ─── 30-second trial timer ───────────────────────────────────────────
   useEffect(() => {
     if (!isPremium && !blocked && channel && !channel.is_free && !trialDone) {
       timerRef.current = setInterval(() => {
@@ -74,7 +103,7 @@ export default function Player() {
           if (t <= 1) {
             clearInterval(timerRef.current!);
             setTrialDone(true);
-            recordPaywallHit(); // start 24h block from now
+            recordPaywallHit();
             setShowPaywall(true);
             if (videoRef.current) videoRef.current.pause();
             return 0;
@@ -86,6 +115,7 @@ export default function Player() {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [channel, isPremium, blocked, trialDone]);
 
+  // ─── Helper: load external scripts ───────────────────────────────────
   const loadScripts = async () => {
     const promises: Promise<void>[] = [];
     if (!window.shaka) promises.push(loadScript('https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.11/shaka-player.compiled.js'));
@@ -94,42 +124,61 @@ export default function Player() {
   };
 
   const loadScript = (src: string): Promise<void> => new Promise((resolve) => {
-    const s = document.createElement('script'); s.src = src; s.onload = () => resolve(); s.onerror = () => resolve(); document.head.appendChild(s);
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => resolve();
+    document.head.appendChild(s);
   });
 
-  const fetchChannelAndToken = async () => {
-    const [cRes, tRes] = await Promise.all([
-      supabase.from('channels').select('*').eq('id', id).single(),
-      supabase.from('tokens').select('value').order('updated_at', { ascending: false }).limit(1).single(),
-    ]);
-    if (cRes.data) setChannel(cRes.data);
-    if (tRes.data) setToken(tRes.data.value || '');
+  // ─── Fetch channel from Supabase ─────────────────────────────────────
+  const fetchChannel = async () => {
+    const { data } = await supabase.from('channels').select('*').eq('id', id).single();
+    if (data && !cancelledRef.current) setChannel(data);
   };
 
+  // ─── Cleanup ─────────────────────────────────────────────────────────
   const cleanup = () => {
-    if (shakaRef.current) { try { shakaRef.current.destroy(); } catch {} shakaRef.current = null; }
-    if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} hlsRef.current = null; }
-    if (videoRef.current) { videoRef.current.src = ''; videoRef.current.load(); }
-    
+    if (tokenIntervalRef.current) {
+      clearInterval(tokenIntervalRef.current);
+      tokenIntervalRef.current = null;
+    }
+    if (shakaRef.current) {
+      try { shakaRef.current.destroy(); } catch {}
+      shakaRef.current = null;
+    }
+    if (hlsRef.current) {
+      try { hlsRef.current.destroy(); } catch {}
+      hlsRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.src = '';
+      videoRef.current.load();
+    }
+    latestTokenRef.current = '';
   };
 
+  // ─── Main playback logic ─────────────────────────────────────────────
   const startPlayback = async () => {
-    if (!channel || !videoRef.current) return;
+    if (!channel || !videoRef.current || cancelledRef.current) return;
     cleanup();
+    cancelledRef.current = false;
     setLoading(true);
 
     const video = videoRef.current;
+    const isAzam = isAzamCdnUrl(channel.url);
+    const channelSlug = isAzam ? extractChannelSlug(channel.url) : null;
 
     try {
       if (channel.type === 'dash') {
-        // Wait for shaka to be available
+        // Wait for Shaka
         let attempts = 0;
         while (!window.shaka && attempts < 20) {
           await new Promise(r => setTimeout(r, 200));
           attempts++;
         }
-        if (!window.shaka) {
-          // fallback: try direct video src
+        if (!window.shaka || cancelledRef.current) {
           video.src = channel.url;
           video.play().catch(() => {});
           setLoading(false);
@@ -140,40 +189,78 @@ export default function Player() {
         const player = new window.shaka.Player(video);
         shakaRef.current = player;
 
-        // Configure DRM ClearKey if available
+        // ClearKey DRM
         if (channel.kid && channel.key) {
-          player.configure({
-            drm: { clearKeys: { [channel.kid]: channel.key } },
-          });
+          player.configure({ drm: { clearKeys: { [channel.kid]: channel.key } } });
         }
 
-        // Configure retry/network settings for resilience
+        // Streaming config
         player.configure({
           streaming: {
-            retryParameters: {
-              maxAttempts: 5,
-              baseDelay: 1000,
-              backoffFactor: 1.5,
-              fuzzFactor: 0.5,
-            },
+            retryParameters: { maxAttempts: 5, baseDelay: 1000, backoffFactor: 1.5, fuzzFactor: 0.5 },
             bufferingGoal: 10,
             rebufferingGoal: 2,
           },
           manifest: {
-            retryParameters: {
-              maxAttempts: 5,
-              baseDelay: 500,
-            },
+            retryParameters: { maxAttempts: 5, baseDelay: 500 },
           },
         });
 
-        // Use token for DASH streams
-        const dashUrl = token ? `${channel.url}?cdntoken=${token}` : channel.url;
-        await player.load(dashUrl);
+        // ─── AzamTV CDN: fetch token + request filter + refresh ───
+        let manifestUrl = channel.url;
+
+        if (isAzam && channelSlug) {
+          // Fetch initial fresh token
+          try {
+            const tokenData = await fetchCdnToken();
+            if (cancelledRef.current) return;
+            latestTokenRef.current = tokenData.token;
+
+            // Build manifest URL with fresh token
+            manifestUrl = `${CDN_HOST}/tok_${tokenData.token}/live/eds/${channelSlug}/DASH/${channelSlug}.mpd`;
+          } catch (err) {
+            console.warn('[Player] Token fetch failed, using original URL:', err);
+            manifestUrl = channel.url;
+          }
+
+          // Register request filter: inject LATEST token into every request
+          const netEngine = player.getNetworkingEngine();
+          if (netEngine) {
+            netEngine.registerRequestFilter((_type: any, request: any) => {
+              if (latestTokenRef.current && request.uris?.[0]) {
+                const u = new URL(request.uris[0]);
+                u.searchParams.set('cdntoken', latestTokenRef.current);
+                request.uris[0] = u.toString();
+              }
+            });
+          }
+
+          // Token refresh every 2 minutes
+          tokenIntervalRef.current = setInterval(async () => {
+            if (cancelledRef.current) return;
+            try {
+              const data = await fetchCdnToken();
+              if (!cancelledRef.current) {
+                latestTokenRef.current = data.token;
+              }
+            } catch (err) {
+              console.warn('[Player] Token refresh failed:', err);
+            }
+          }, 2 * 60 * 1000);
+        }
+
+        // Load and play
+        await player.load(manifestUrl);
+        if (cancelledRef.current) return;
         video.play().catch(() => {});
 
+        // Error handler
+        player.addEventListener('error', (event: any) => {
+          console.error('[Shaka] Error:', event.detail?.code);
+        });
+
       } else {
-        // HLS stream — wait for Hls.js to be ready
+        // ─── HLS streams ───────────────────────────────────────────
         let hlsAttempts = 0;
         while (!window.Hls && hlsAttempts < 20) {
           await new Promise(r => setTimeout(r, 200));
@@ -197,9 +284,7 @@ export default function Player() {
             manifestLoadingMaxRetry: 6,
             levelLoadingMaxRetry: 6,
             fragLoadingRetryDelay: 1000,
-            xhrSetup: (xhr: XMLHttpRequest) => {
-              xhr.withCredentials = false;
-            },
+            xhrSetup: (xhr: XMLHttpRequest) => { xhr.withCredentials = false; },
           });
           hlsRef.current = hls;
 
@@ -218,7 +303,6 @@ export default function Player() {
                   hls.recoverMediaError();
                   break;
                 default:
-                  // Destroy and retry after 3s
                   hls.destroy();
                   setTimeout(() => startPlayback(), 3000);
                   break;
@@ -228,22 +312,19 @@ export default function Player() {
 
           hls.loadSource(channel.url);
           hls.attachMedia(video);
+          return; // loading handled by MANIFEST_PARSED
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          // Native HLS (Safari/iOS)
           video.src = channel.url;
           video.load();
           video.play().catch(() => {});
-          setLoading(false);
         } else {
           video.src = channel.url;
           video.load();
           video.play().catch(() => {});
-          setLoading(false);
         }
-        return; // loading state handled by MANIFEST_PARSED event above
       }
-    } catch {
-      // Silently ignore errors
+    } catch (err) {
+      console.error('[Player] Playback error:', err);
     }
 
     setLoading(false);
@@ -257,12 +338,10 @@ export default function Player() {
           <X className="w-5 h-5 text-primary" />
         </button>
         <span className="font-bold text-sm text-white truncate flex-1">{channel?.name || '...'}</span>
-        {/* LIVE badge */}
         <span className="flex items-center gap-1 bg-red-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse">
           <span className="w-1.5 h-1.5 rounded-full bg-white inline-block" />
           LIVE
         </span>
-        {/* Trial countdown - only for non-free, non-premium channels */}
         {!isPremium && !blocked && !trialDone && channel && !channel.is_free && (
           <span className="text-xs font-bold text-yellow-400 bg-yellow-400/10 border border-yellow-400/30 px-2 py-0.5 rounded-full">
             {trialLeft}s
@@ -294,18 +373,15 @@ export default function Player() {
           className="w-full h-full max-h-full object-contain"
         />
 
-        {/* Loading spinner */}
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <Loader2 className="w-10 h-10 text-primary animate-spin opacity-80" />
           </div>
         )}
 
-        {/* Paywall overlay */}
         {showPaywall && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/95 z-30 px-6">
             <div className="w-full max-w-sm rounded-2xl p-6 text-center border border-primary/40 bg-black/80 backdrop-blur-sm shadow-[0_0_40px_rgba(220,38,38,0.2)]">
-              {/* Brand */}
               <div className="flex items-center justify-center gap-2 mb-4">
                 <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
                   <span className="text-primary-foreground font-black text-xs">NX</span>
