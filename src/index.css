@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 15% 6%;
+    --foreground: 0 10% 95%;
+
+    --card: 0 12% 9%;
+    --card-foreground: 0 10% 95%;
+
+    --popover: 0 12% 9%;
+    --popover-foreground: 0 10% 95%;
+
+    --primary: 0 90% 52%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 70% 35%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 0 10% 14%;
+    --muted-foreground: 0 8% 55%;
+
+    --accent: 0 90% 52%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 0 15% 18%;
+    --input: 0 15% 18%;
+    --ring: 0 90% 52%;
+
+    --radius: 0.5rem;
+
+    /* Custom tokens */
+    --cyan: 0 90% 52%;
+    --pink: 0 70% 40%;
+    --glow-cyan: 0 0 20px hsl(0 90% 52% / 0.6);
+    --glow-pink: 0 0 20px hsl(0 70% 40% / 0.6);
+
+    --sidebar-background: 0 15% 5%;
+    --sidebar-foreground: 0 8% 80%;
+    --sidebar-primary: 0 90% 52%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 10% 12%;
+    --sidebar-accent-foreground: 0 90% 52%;
+    --sidebar-border: 0 15% 15%;
+    --sidebar-ring: 0 90% 52%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply text-foreground;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background-color: hsl(var(--background));
+    background-image: radial-gradient(ellipse at top left, hsl(0 70% 12% / 0.8) 0%, transparent 55%),
+                      radial-gradient(ellipse at bottom right, hsl(0 60% 9% / 0.7) 0%, transparent 55%),
+                      radial-gradient(ellipse at bottom left, hsl(0 50% 8% / 0.6) 0%, transparent 45%),
+                      radial-gradient(ellipse at top right, hsl(0 40% 10% / 0.4) 0%, transparent 45%);
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--cyan) / 0.4);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--cyan) / 0.7);
+  }
+}
+
+@layer utilities {
+  .glow-cyan {
+    box-shadow: 0 0 20px hsl(var(--cyan) / 0.4);
+  }
+
+  .glow-pink {
+    box-shadow: 0 0 20px hsl(var(--pink) / 0.4);
+  }
+
+  .text-glow-cyan {
+    text-shadow: 0 0 12px hsl(var(--cyan) / 0.7);
+  }
+
+  .text-glow-pink {
+    text-shadow: 0 0 12px hsl(0 70% 40% / 0.7);
+  }
+
+  .border-glow-cyan {
+    border-color: hsl(var(--cyan));
+    box-shadow: 0 0 12px hsl(var(--cyan) / 0.3);
+  }
+
+  .border-glow-pink {
+    border-color: hsl(0 70% 40%);
+    box-shadow: 0 0 12px hsl(0 70% 40% / 0.3);
+  }
+
+  .cyber-card {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    transition: all 0.2s ease;
+  }
+
+  .cyber-card:hover {
+    border-color: hsl(var(--cyan) / 0.5);
+    box-shadow: 0 0 16px hsl(var(--cyan) / 0.15);
+  }
+}
