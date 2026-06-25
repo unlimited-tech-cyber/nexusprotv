@@ -8,19 +8,21 @@ export function extractChannelSlug(url: string): string | null {
 }
 
 export function buildPlaybackCandidates(url: string, token: string): string[] {
-  const candidates = new Set<string>();
   if (!url) return [];
-
-  candidates.add(url);
+  const candidates: string[] = [];
 
   if (isAzamCdnUrl(url)) {
     const slug = extractChannelSlug(url);
-    if (slug) {
+    if (slug && token) {
       const base = 'https://cdnedgch2.azamtvltd.co.tz';
-      candidates.add(`${base}/tok_${token}/live/eds/${slug}/DASH/${slug}.mpd`);
-      candidates.add(`${url}?cdntoken=${token}`);
+      candidates.push(`${base}/tok_${token}/live/eds/${slug}/DASH/${slug}.mpd`);
+      candidates.push(`${url}?cdntoken=${token}`);
     }
   }
+  
+  if (!candidates.includes(url)) {
+    candidates.push(url);
+  }
 
-  return Array.from(candidates);
+  return candidates;
 }

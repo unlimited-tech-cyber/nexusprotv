@@ -167,7 +167,17 @@ export default function Player() {
     const video = videoRef.current;
     const isAzam = isAzamCdnUrl(channel.url);
     const channelSlug = isAzam ? extractChannelSlug(channel.url) : null;
-    video.muted = true;
+    
+    video.muted = false;
+    setMuted(false);
+
+    const tryPlay = () => {
+      video.play().catch(() => {
+        video.muted = true;
+        setMuted(true);
+        video.play().catch((e) => console.warn('[Player] Auto-play failed completely', e));
+      });
+    };
 
     try {
       if (channel.type === 'dash') {
@@ -179,10 +189,7 @@ export default function Player() {
         }
         if (!window.shaka || cancelledRef.current) {
           video.src = channel.url;
-          video.play().catch(() => {
-            video.muted = true;
-            video.play().catch(() => {});
-          });
+          tryPlay();
           setLoading(false);
           return;
         }
@@ -271,10 +278,7 @@ export default function Player() {
           return;
         }
 
-        video.play().catch(() => {
-          video.muted = true;
-          video.play().catch(() => {});
-        });
+        tryPlay();
 
         // Error handler
         player.addEventListener('error', (event: any) => {
@@ -317,10 +321,7 @@ export default function Player() {
               fallbackTimerRef.current = null;
             }
             setLoading(false);
-            video.play().catch(() => {
-              video.muted = true;
-              video.play().catch(() => {});
-            });
+            tryPlay();
           });
 
           hls.on(window.Hls.Events.ERROR, (_: any, data: any) => {
@@ -345,10 +346,7 @@ export default function Player() {
             if (video.readyState < 2) {
               video.src = channel.url;
               video.load();
-              video.play().catch(() => {
-                video.muted = true;
-                video.play().catch(() => {});
-              });
+              tryPlay();
               setLoading(false);
               setErrorMessage('The stream is taking too long to load. Trying a direct playback fallback.');
             }
@@ -360,17 +358,11 @@ export default function Player() {
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = channel.url;
           video.load();
-          video.play().catch(() => {
-            video.muted = true;
-            video.play().catch(() => {});
-          });
+          tryPlay();
         } else {
           video.src = channel.url;
           video.load();
-          video.play().catch(() => {
-            video.muted = true;
-            video.play().catch(() => {});
-          });
+          tryPlay();
         }
       }
     } catch (err) {
