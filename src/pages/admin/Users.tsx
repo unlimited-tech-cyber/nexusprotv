@@ -39,7 +39,7 @@ export default function AdminUsers() {
   const [approvePlan, setApprovePlan] = useState('month');
   const [revoking, setRevoking] = useState<string | null>(null);
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { fetchAll(); const channel = supabase.channel('admin:profiles'); channel.on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchAll()).subscribe(); channel.on('postgres_changes', { event: '*', schema: 'public', table: 'subscriptions' }, () => fetchAll()).subscribe(); return () => { supabase.removeChannel(channel); }; }, []);
 
   const fetchAll = async () => {
     setLoading(true);

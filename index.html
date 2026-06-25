@@ -23,5 +23,42 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Kuzuia Right Click
+      document.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+      });
+
+      // Kuzuia njia za mkato (Shortcuts) za Developer Tools
+      document.onkeydown = function (e) {
+        // F12
+        if (e.keyCode === 123) {
+          return false;
+        }
+        // Ctrl+Shift+I (Chrome, Firefox)
+        if (e.ctrlKey && e.shiftKey && e.keyCode === 73) {
+          return false;
+        }
+        // Ctrl+Shift+J (Chrome)
+        if (e.ctrlKey && e.shiftKey && e.keyCode === 74) {
+          return false;
+        }
+        // Ctrl+Shift+C (Chrome)
+        if (e.ctrlKey && e.shiftKey && e.keyCode === 67) {
+          return false;
+        }
+        // Ctrl+U (View Source)
+        if (e.ctrlKey && e.keyCode === 85) {
+          return false;
+        }
+      };
+
+      // Kujaribu kudetect kama DevTools ipo wazi na kusimamisha execution
+      setInterval(function () {
+        (function () {
+          return false;
+        }['constructor']('debugger')());
+      }, 1000);
+    </script>
   </body>
 </html>

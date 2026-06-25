@@ -49,14 +49,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const ensureProfile = async (userId: string, fallback: { display_name?: string | null; phone?: string | null } = {}) => {
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (existing) return;
+
+    await (supabase.from('profiles') as any).insert({
+      user_id: userId,
+      display_name: fallback.display_name || null,
+      phone: fallback.phone || null,
+      plan: 'free',
+      is_active: true,
+      device_id: null,
+    });
+  };
+
   const fetchProfile = async (userId: string) => {
-    await supabase.rpc('check_user_subscription', { p_user_id: userId });
-    const { data } = await supabase
+    await supabase.rpc('check_user_subscription', { p_user_id: userId }).catch(() => undefined);
+    await ensureProfile(userId);
+    const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
+    if (error && error.code !== 'PGRST116') {
+      console.warn('[Auth] profile lookup failed:', error.message);
+      return;
+    }
     if (data) setProfile(data as Profile);
+    else setProfile(null);
   };
 
   useEffect(() => {
@@ -90,12 +115,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const deviceId = getDeviceId();
 
+    await ensureProfile(data.user.id, { display_name: data.user.user_metadata?.display_name || data.user.email?.split('@')[0] || null, phone: data.user.user_metadata?.phone || null });
+
     // Fetch profile to check device_id (cast to any since device_id is new)
     const { data: prof } = await supabase
       .from('profiles')
       .select('*')
       .eq('user_id', data.user.id)
-      .single();
+      .maybeSingle();
 
     const profAny = prof as any;
     if (profAny) {
@@ -132,6 +159,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const { data: { session: sess } } = await supabase.auth.getSession();
         if (sess?.user) {
           const deviceId = getDeviceId();
+          await ensureProfile(sess.user.id, { display_name: displayName, phone });
           await (supabase.from('profiles') as any)
             .update({ phone, device_id: deviceId })
             .eq('user_id', sess.user.id);

@@ -30,7 +30,7 @@ export default function AdminChannels() {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { fetchChannels(); }, []);
+  useEffect(() => { fetchChannels(); const channel = supabase.channel('admin:channels'); channel.on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, () => fetchChannels()).subscribe(); return () => { supabase.removeChannel(channel); }; }, []);
 
   const fetchChannels = async () => {
     const { data } = await supabase.from('channels').select('*').order('sort_order');

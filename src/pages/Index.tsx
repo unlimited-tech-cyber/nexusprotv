@@ -16,7 +16,7 @@ export default function Index() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => { fetchChannels(); }, []);
+  useEffect(() => { fetchChannels(); const channel = supabase.channel('public:channels'); channel.on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, () => fetchChannels()).subscribe(); return () => { supabase.removeChannel(channel); }; }, []);
 
   const fetchChannels = async () => {
     const { data } = await supabase.from('channels').select('id, name, img_url').eq('active', true).order('sort_order');

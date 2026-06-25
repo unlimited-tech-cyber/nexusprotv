@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { buildPlaybackCandidates, extractChannelSlug, isAzamCdnUrl } from '@/lib/streaming';
 import { X, Volume2, VolumeX, Crown, Loader2 } from 'lucide-react';
 
 declare global {
@@ -30,19 +31,6 @@ function recordPaywallHit() {
   localStorage.setItem(PAYWALL_KEY, Date.now().toString());
 }
 
-/** Check if a channel URL belongs to AzamTV CDN (needs token refresh) */
-function isAzamCdnUrl(url: string): boolean {
-  return url.includes('cdnedgch2.azamtvltd.co.tz');
-}
-
-/** Extract the channel slug from an AzamTV CDN URL
- *  e.g. .../live/eds/AzamSport1/DASH/AzamSport1.mpd → AzamSport1
- */
-function extractChannelSlug(url: string): string | null {
-  const match = url.match(/\/live\/eds\/([^/]+)\/DASH\//);
-  return match ? match[1] : null;
-}
-
 /** Fetch fresh CDN token from our server-side proxy */
 async function fetchCdnToken(): Promise<{ token: string; exp: number; cdnHost: string }> {
   const res = await fetch('/api/cdn-token?t=' + Date.now(), { cache: 'no-store' });
@@ -61,6 +49,7 @@ export default function Player() {
   const [trialLeft, setTrialLeft] = useState(30);
   const [trialDone, setTrialDone] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Token stored in ref — no re-renders on refresh
   const latestTokenRef = useRef<string>('');
@@ -70,6 +59,7 @@ export default function Player() {
   const shakaRef = useRef<any>(null);
   const hlsRef = useRef<any>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fallbackTimerRef = useRef<number | null>(null);
 
   const isPremium = profile?.plan && profile.plan !== 'free';
   const blocked = !isPremium && !channel?.is_free && isBlockActive();
@@ -90,7 +80,9 @@ export default function Player() {
     if (blocked) {
       setShowPaywall(true);
       setLoading(false);
+      setErrorMessage(null);
     } else {
+      setErrorMessage(null);
       startPlayback();
     }
   }, [channel]);
@@ -133,12 +125,16 @@ export default function Player() {
 
   // ─── Fetch channel from Supabase ─────────────────────────────────────
   const fetchChannel = async () => {
-    const { data } = await supabase.from('channels').select('*').eq('id', id).single();
-    if (data && !cancelledRef.current) setChannel(data);
+    const { data, error } = await supabase.from('channels').select('*').eq('id', id).maybeSingle();
+    if (!error && data && !cancelledRef.current) setChannel(data);
   };
 
   // ─── Cleanup ─────────────────────────────────────────────────────────
   const cleanup = () => {
+    if (fallbackTimerRef.current) {
+      window.clearTimeout(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
     if (tokenIntervalRef.current) {
       clearInterval(tokenIntervalRef.current);
       tokenIntervalRef.current = null;
@@ -165,10 +161,13 @@ export default function Player() {
     cleanup();
     cancelledRef.current = false;
     setLoading(true);
+    setErrorMessage(null);
+    setShowPaywall(false);
 
     const video = videoRef.current;
     const isAzam = isAzamCdnUrl(channel.url);
     const channelSlug = isAzam ? extractChannelSlug(channel.url) : null;
+    video.muted = true;
 
     try {
       if (channel.type === 'dash') {
@@ -180,7 +179,10 @@ export default function Player() {
         }
         if (!window.shaka || cancelledRef.current) {
           video.src = channel.url;
-          video.play().catch(() => {});
+          video.play().catch(() => {
+            video.muted = true;
+            video.play().catch(() => {});
+          });
           setLoading(false);
           return;
         }
@@ -250,13 +252,34 @@ export default function Player() {
         }
 
         // Load and play
-        await player.load(manifestUrl);
+        const manifestCandidates = buildPlaybackCandidates(channel.url, latestTokenRef.current);
+        let loaded = false;
+        for (const candidateUrl of manifestCandidates) {
+          try {
+            await player.load(candidateUrl);
+            loaded = true;
+            break;
+          } catch (loadErr) {
+            console.warn('[Player] DASH candidate failed:', candidateUrl, loadErr);
+          }
+        }
+
         if (cancelledRef.current) return;
-        video.play().catch(() => {});
+        if (!loaded) {
+          setErrorMessage('This stream is currently unavailable. Please try another channel.');
+          setLoading(false);
+          return;
+        }
+
+        video.play().catch(() => {
+          video.muted = true;
+          video.play().catch(() => {});
+        });
 
         // Error handler
         player.addEventListener('error', (event: any) => {
           console.error('[Shaka] Error:', event.detail?.code);
+          setErrorMessage('Playback failed. Trying a fallback source.');
         });
 
       } else {
@@ -289,8 +312,15 @@ export default function Player() {
           hlsRef.current = hls;
 
           hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+            if (fallbackTimerRef.current) {
+              window.clearTimeout(fallbackTimerRef.current);
+              fallbackTimerRef.current = null;
+            }
             setLoading(false);
-            video.play().catch(() => {});
+            video.play().catch(() => {
+              video.muted = true;
+              video.play().catch(() => {});
+            });
           });
 
           hls.on(window.Hls.Events.ERROR, (_: any, data: any) => {
@@ -310,17 +340,37 @@ export default function Player() {
             }
           });
 
+          fallbackTimerRef.current = window.setTimeout(() => {
+            if (cancelledRef.current) return;
+            if (video.readyState < 2) {
+              video.src = channel.url;
+              video.load();
+              video.play().catch(() => {
+                video.muted = true;
+                video.play().catch(() => {});
+              });
+              setLoading(false);
+              setErrorMessage('The stream is taking too long to load. Trying a direct playback fallback.');
+            }
+          }, 6000);
+
           hls.loadSource(channel.url);
           hls.attachMedia(video);
           return; // loading handled by MANIFEST_PARSED
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = channel.url;
           video.load();
-          video.play().catch(() => {});
+          video.play().catch(() => {
+            video.muted = true;
+            video.play().catch(() => {});
+          });
         } else {
           video.src = channel.url;
           video.load();
-          video.play().catch(() => {});
+          video.play().catch(() => {
+            video.muted = true;
+            video.play().catch(() => {});
+          });
         }
       }
     } catch (err) {
@@ -370,12 +420,24 @@ export default function Player() {
           autoPlay
           playsInline
           crossOrigin="anonymous"
+          onLoadedData={() => setLoading(false)}
+          onPlaying={() => setLoading(false)}
+          onError={() => {
+            setLoading(false);
+            setErrorMessage('This stream could not be played. Please try another channel.');
+          }}
           className="w-full h-full max-h-full object-contain"
         />
 
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <Loader2 className="w-10 h-10 text-primary animate-spin opacity-80" />
+          </div>
+        )}
+
+        {errorMessage && !loading && (
+          <div className="absolute bottom-4 left-4 right-4 z-20 rounded-xl border border-primary/30 bg-black/80 px-3 py-2 text-center text-sm text-white">
+            {errorMessage}
           </div>
         )}
 

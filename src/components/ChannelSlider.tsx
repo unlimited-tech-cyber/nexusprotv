@@ -21,6 +21,9 @@ export default function ChannelSlider() {
 
   useEffect(() => {
     fetchSlides();
+    const channel = supabase.channel('public:slider_images');
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'slider_images' }, () => fetchSlides()).subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   useEffect(() => {
